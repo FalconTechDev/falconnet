@@ -1,0 +1,5 @@
+/target
+
+# Captures are large and carry real addresses — generate them, never commit them.
+*.pcap
+*.pcapng

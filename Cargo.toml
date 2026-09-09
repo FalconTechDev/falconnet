@@ -1,0 +1,31 @@
+[package]
+name = "falconet"
+version = "0.1.0"
+edition = "2021"
+description = "SQL, diagnostics and per-process attribution over packet captures"
+license = "MIT"
+
+[[bin]]
+name = "falconet"
+path = "src/main.rs"
+
+[dependencies]
+pcap-file = "2.0"
+etherparse = "0.16"
+datafusion = "44"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+ratatui = "0.29"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+    "Win32_System_Diagnostics_ToolHelp",
+] }
+
+[profile.release]
+lto = true
+codegen-units = 1

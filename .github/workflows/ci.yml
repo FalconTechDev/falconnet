@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    # The socket-to-process table is a Windows API, so the suite that covers it
+    # only means anything on Windows. Ubuntu still builds and runs everything
+    # else, which is what catches accidental platform coupling in the parsers.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --all-targets
+
+  fixture:
+    # The generator writes real wire formats; if it drifts from what the
+    # dissectors expect, triage silently stops finding anything.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: python scripts/gen_capture.py fixture.pcap --packets 20000
+      - run: cargo run --release -- stat fixture.pcap
+      - name: triage must still find the planted faults
+        run: |
+          cargo run --release -- triage fixture.pcap | tee out.txt
+          grep -q "refused by 10.0.4.7:5432" out.txt
+          grep -q "NXDOMAIN" out.txt

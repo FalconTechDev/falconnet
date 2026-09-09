@@ -208,7 +208,7 @@ fn first_line(s: &str) -> String {
 
 /// Render batches into displayable strings, using Arrow's own formatting so a
 /// value looks the same here as it does in `falconet query`.
-fn to_strings(batches: &[RecordBatch]) -> (Vec<String>, Vec<Vec<String>>) {
+pub fn to_strings(batches: &[RecordBatch]) -> (Vec<String>, Vec<Vec<String>>) {
     let Some(first) = batches.first() else {
         return (Vec::new(), Vec::new());
     };

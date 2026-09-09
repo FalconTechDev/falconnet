@@ -9,6 +9,7 @@ mod capture;
 mod decode;
 mod flows;
 mod procs;
+mod serve;
 mod triage;
 mod tui;
 
@@ -48,6 +49,12 @@ enum Cmd {
     Triage { file: PathBuf },
     /// Browse a capture interactively in the terminal.
     Tui { file: PathBuf },
+    /// Serve the capture as a page in your browser.
+    Serve {
+        file: PathBuf,
+        #[arg(long, default_value_t = 8080)]
+        port: u16,
+    },
     /// Who on this machine is connected to what, right now, by process.
     Who {
         /// Show every socket instead of one line per process.
@@ -83,6 +90,14 @@ async fn main() -> Result<()> {
         }
         Cmd::Stat { file } => stat(&file).await,
         Cmd::Who { sockets } => who(sockets),
+        Cmd::Serve { file, port } => {
+            let (ctx, loaded) = load(&file).await?;
+            let name = file
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| file.display().to_string());
+            serve::run(ctx, name, loaded.packets, loaded.flows, port).await
+        }
         Cmd::Tui { file } => {
             let (ctx, _) = load(&file).await?;
             tui::run(&ctx).await

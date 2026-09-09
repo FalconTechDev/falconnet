@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>falconet</title>
+<style>
+  :root {
+    --bg: #f6f8fa; --panel: #fff; --line: #d0d7de; --fg: #1f2328; --dim: #636c76;
+    --accent: #2f81f7; --problem: #cf222e; --warn: #9a6700; --ok: #1a7f37;
+    --mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --panel: #161b22; --line: #30363d; --fg: #e6edf3; --dim: #8b949e;
+      --accent: #4493f8; --problem: #ff7b72; --warn: #d29922; --ok: #3fb950;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; letter-spacing: -.2px; }
+  header .meta { color: var(--dim); font-size: 13px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 20px; }
+  section { margin-bottom: 22px; }
+  h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .6px;
+    color: var(--dim); margin: 0 0 8px;
+  }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  .findings { padding: 6px 0; }
+  .finding {
+    display: flex; gap: 10px; padding: 7px 16px; align-items: baseline;
+    border-bottom: 1px solid var(--line); font-size: 14px;
+  }
+  .finding:last-child { border-bottom: 0; }
+  .mark { font-family: var(--mono); font-weight: 700; flex: none; width: 1em; }
+  .problem .mark { color: var(--problem); }
+  .warning .mark { color: var(--warn); }
+  .ok .mark { color: var(--ok); }
+  textarea {
+    width: 100%; min-height: 92px; resize: vertical; padding: 12px;
+    font-family: var(--mono); font-size: 13px; color: var(--fg);
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px 8px 0 0; border-bottom: 0; outline: none;
+  }
+  textarea:focus { border-color: var(--accent); }
+  .bar {
+    display: flex; align-items: center; gap: 12px; padding: 8px 12px;
+    border: 1px solid var(--line); border-radius: 0 0 8px 8px; background: var(--panel);
+  }
+  button {
+    font: inherit; font-weight: 600; padding: 7px 16px; border-radius: 6px;
+    border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer;
+  }
+  button:hover { filter: brightness(1.08); }
+  button:disabled { opacity: .55; cursor: default; }
+  .hint { color: var(--dim); font-size: 12px; }
+  .examples { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .examples button {
+    background: transparent; color: var(--accent); border-color: var(--line);
+    font-weight: 400; font-size: 12px; padding: 4px 10px;
+  }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 13px; }
+  th, td { text-align: left; padding: 6px 12px; white-space: nowrap; }
+  th {
+    position: sticky; top: 0; background: var(--panel); color: var(--dim);
+    font-weight: 600; border-bottom: 1px solid var(--line);
+  }
+  tbody tr:nth-child(even) { background: color-mix(in srgb, var(--fg) 4%, transparent); }
+  .error {
+    color: var(--problem); font-family: var(--mono); font-size: 13px;
+    padding: 12px 16px; white-space: pre-wrap;
+  }
+  .empty { color: var(--dim); padding: 14px 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>falconet</h1>
+  <span class="meta" id="meta">loading…</span>
+</header>
+
+<main>
+  <section>
+    <h2>Diagnosis</h2>
+    <div class="card findings" id="findings"><div class="empty">running the rules…</div></div>
+  </section>
+
+  <section>
+    <h2>Ask</h2>
+    <textarea id="sql" spellcheck="false">SELECT COALESCE(host, server_ip) AS peer,
+       COUNT(*) AS conns, SUM(bytes) AS bytes
+FROM flows
+GROUP BY peer
+ORDER BY bytes DESC
+LIMIT 20</textarea>
+    <div class="bar">
+      <button id="run">Run</button>
+      <span class="hint" id="status">Ctrl+Enter runs the query. Tables: packets, flows.</span>
+    </div>
+    <div class="examples" id="examples"></div>
+  </section>
+
+  <section>
+    <h2>Result</h2>
+    <div class="card scroll" id="result"><div class="empty">Nothing run yet.</div></div>
+  </section>
+</main>
+
+<script>
+const EXAMPLES = [
+  ["Refused connections",
+   "SELECT server_ip, server_port, COUNT(*) AS attempts\nFROM flows WHERE state = 'refused'\nGROUP BY server_ip, server_port ORDER BY attempts DESC"],
+  ["Slowest DNS lookups",
+   "SELECT host, ROUND(duration, 3) AS seconds\nFROM flows WHERE server_port = 53 AND packets = 2\nORDER BY duration DESC LIMIT 20"],
+  ["Cleartext HTTP",
+   "SELECT client_ip, host, info FROM packets\nWHERE app = 'HTTP' AND info LIKE 'GET%' LIMIT 50"],
+  ["How connections ended",
+   "SELECT state, COUNT(*) AS n FROM flows GROUP BY state ORDER BY n DESC"],
+  ["Traffic over time",
+   "SELECT CAST(ts AS BIGINT) AS second, COUNT(*) AS packets, SUM(len) AS bytes\nFROM packets GROUP BY second ORDER BY second LIMIT 100"],
+  ["Busiest conversations",
+   "SELECT client_ip, server_ip, COALESCE(host,'') AS host, packets, bytes, state\nFROM flows ORDER BY bytes DESC LIMIT 25"],
+];
+
+const $ = id => document.getElementById(id);
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+async function boot() {
+  const s = await (await fetch('/api/summary')).json();
+  $('meta').textContent =
+    `${s.file} — ${s.packets.toLocaleString()} packets in ${s.flows.toLocaleString()} conversations`;
+  document.title = `falconet — ${s.file}`;
+
+  const t = await (await fetch('/api/triage')).json();
+  const marks = { problem: 'x', warning: '!', ok: '+' };
+  $('findings').innerHTML = t.findings.length
+    ? t.findings.map(f =>
+        `<div class="finding ${f.level}"><span class="mark">${marks[f.level]}</span><span>${esc(f.line)}</span></div>`
+      ).join('')
+    : '<div class="empty">Nothing stood out.</div>';
+
+  $('examples').innerHTML = EXAMPLES
+    .map((e, i) => `<button data-i="${i}">${esc(e[0])}</button>`).join('');
+  $('examples').onclick = ev => {
+    const i = ev.target.dataset.i;
+    if (i === undefined) return;
+    $('sql').value = EXAMPLES[i][1];
+    run();
+  };
+}
+
+async function run() {
+  const btn = $('run');
+  btn.disabled = true;
+  $('status').textContent = 'running…';
+  try {
+    const r = await fetch('/api/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sql: $('sql').value }),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      $('result').innerHTML = `<div class="error">${esc(data.error)}</div>`;
+      $('status').textContent = 'the query was rejected';
+      return;
+    }
+    render(data);
+    $('status').textContent =
+      `${data.rows.length.toLocaleString()} rows in ${data.elapsed_ms.toFixed(1)} ms`;
+  } catch (e) {
+    $('result').innerHTML = `<div class="error">${esc(e.message)}</div>`;
+    $('status').textContent = 'request failed';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function render(d) {
+  if (!d.rows.length) {
+    $('result').innerHTML = '<div class="empty">No rows.</div>';
+    return;
+  }
+  const head = d.columns.map(c => `<th>${esc(c)}</th>`).join('');
+  // Cap what is put in the DOM: the engine will happily return more rows than
+  // a browser will lay out, and freezing the page is not a useful answer.
+  const shown = d.rows.slice(0, 2000);
+  const body = shown
+    .map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join('')}</tr>`)
+    .join('');
+  const note = d.rows.length > shown.length
+    ? `<div class="empty">Showing ${shown.length.toLocaleString()} of ${d.rows.length.toLocaleString()} rows — add a LIMIT to narrow it.</div>`
+    : '';
+  $('result').innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>${note}`;
+}
+
+$('run').onclick = run;
+$('sql').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); run(); }
+});
+boot();
+</script>
+</body>
+</html>

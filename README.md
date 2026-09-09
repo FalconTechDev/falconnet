@@ -24,6 +24,9 @@ It does the three things Wireshark is bad at:
 falconet query dump.pcap "SELECT host, SUM(bytes) FROM flows GROUP BY host"
 falconet triage dump.pcap     # what is broken, in words
 falconet who                  # who on this machine is connected to what, by process
+
+falconet tui dump.pcap        # browse it in the terminal
+falconet serve dump.pcap      # or in a browser
 ```
 
 ---
@@ -153,6 +156,18 @@ that takes a SQL condition (`state = 'refused'`, `info LIKE '%NXDOMAIN%'`), so
 whatever you work out while looking around pastes straight into
 `falconet query`. `q` quits.
 
+## In a browser
+
+```bash
+falconet serve capture.pcap        # http://127.0.0.1:8080
+```
+
+The same two tables and the same rules, as a page: the diagnosis at the top, a
+SQL box under it, results below. There is no build step, no `npm install` and no
+bundled runtime — the page is compiled into the binary. One executable and a
+port is the whole deployment, which also means a machine where installing
+Wireshark is not an option can still read the capture.
+
 ## Install
 
 ```bash
@@ -218,11 +233,14 @@ them.
 ## Roadmap
 
 1. Live capture off an interface, joined to the process table so the live view
-   names programs rather than addresses.
+   names programs rather than addresses. This is the one piece that needs a
+   system dependency — Npcap on Windows, libpcap elsewhere — which is why it is
+   not in the tree yet: everything above builds with nothing but Rust.
 2. Streaming load, so capture size stops being bounded by memory.
 3. Flow idle timeout, removing the port-reuse caveat above.
 4. TCP reassembly, which unlocks retransmission and loss reporting.
-5. A GUI.
+5. A desktop window. `serve` already renders the whole interface, so this is a
+   wrapper around it rather than a second UI to maintain.
 
 ## License
 

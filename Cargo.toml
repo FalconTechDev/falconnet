@@ -13,10 +13,16 @@ path = "src/main.rs"
 pcap-file = "2.0"
 etherparse = "0.16"
 datafusion = "44"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 ratatui = "0.29"
+axum = "0.8"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

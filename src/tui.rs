@@ -11,6 +11,7 @@
 //! connection worked is coloured so the eye finds it without being told.
 
 use std::io;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -24,9 +25,11 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::prelude::*;
 use ratatui::widgets::{
-    Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
-    TableState,
+    Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Table, TableState, Wrap,
 };
+
+use crate::dissect;
 
 /// Rows pulled into memory for browsing. The point of the tool is that a
 /// capture can be far larger than what fits on a screen or in a string table,
@@ -56,7 +59,7 @@ struct Col {
     fmt: Fmt,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum View {
     Flows,
     Packets,
@@ -119,6 +122,14 @@ impl View {
                 },
             ],
             View::Packets => &[
+                // Numbered the way every capture tool numbers packets, because
+                // it is how people refer to one out loud — and what Enter takes
+                // back to fetch its bytes.
+                Col {
+                    title: "no",
+                    width: Constraint::Length(8),
+                    fmt: Fmt::Num,
+                },
                 Col {
                     title: "time",
                     width: Constraint::Length(13),
@@ -175,7 +186,7 @@ impl View {
                  FROM flows {where_clause}ORDER BY bytes DESC LIMIT {MAX_ROWS}"
             ),
             View::Packets => format!(
-                "SELECT ts,
+                "SELECT num, ts,
                         concat(COALESCE(src_ip, '?'), ':', COALESCE(CAST(src_port AS VARCHAR), '-')) AS source,
                         concat(COALESCE(dst_ip, '?'), ':', COALESCE(CAST(dst_port AS VARCHAR), '-')) AS destination,
                         proto, len, COALESCE(tcp_flags, '') AS flags,
@@ -194,7 +205,16 @@ impl View {
     }
 }
 
+/// One packet, taken apart. Held only while it is on screen.
+struct Detail {
+    num: u64,
+    lines: Vec<Line<'static>>,
+    scroll: u16,
+}
+
 struct App {
+    file: PathBuf,
+    detail: Option<Detail>,
     view: View,
     filter: String,
     /// Set while the filter box has focus; Esc or Enter closes it.
@@ -206,8 +226,10 @@ struct App {
     error: Option<String>,
 }
 
-pub async fn run(ctx: &SessionContext) -> Result<()> {
+pub async fn run(ctx: &SessionContext, file: &Path) -> Result<()> {
     let mut app = App {
+        file: file.to_path_buf(),
+        detail: None,
         view: View::Flows,
         filter: String::new(),
         editing: false,
@@ -251,6 +273,21 @@ async fn event_loop<B: Backend>(
             continue;
         }
 
+        // The detail overlay owns every key while it is up, so nothing behind
+        // it moves out from under the packet being read.
+        if let Some(d) = &mut app.detail {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => app.detail = None,
+                KeyCode::Down | KeyCode::Char('j') => d.scroll = d.scroll.saturating_add(1),
+                KeyCode::Up | KeyCode::Char('k') => d.scroll = d.scroll.saturating_sub(1),
+                KeyCode::PageDown => d.scroll = d.scroll.saturating_add(10),
+                KeyCode::PageUp => d.scroll = d.scroll.saturating_sub(10),
+                KeyCode::Home => d.scroll = 0,
+                _ => {}
+            }
+            continue;
+        }
+
         if app.editing {
             match key.code {
                 KeyCode::Enter => {
@@ -288,6 +325,12 @@ async fn event_loop<B: Backend>(
                 app.reload(ctx).await;
             }
             KeyCode::Char('/') => app.editing = true,
+            // Enter takes the packet apart; f takes the whole conversation.
+            KeyCode::Enter if app.view == View::Packets => app.open_detail(),
+            KeyCode::Char('f') if app.view == View::Flows => {
+                app.follow();
+                app.reload(ctx).await;
+            }
             KeyCode::Down | KeyCode::Char('j') => app.move_by(1),
             KeyCode::Up | KeyCode::Char('k') => app.move_by(-1),
             KeyCode::PageDown | KeyCode::Char(' ') => app.move_by(page as isize),
@@ -302,6 +345,87 @@ async fn event_loop<B: Backend>(
 }
 
 impl App {
+    /// Fetch the selected packet's bytes and take them apart. The columns drop
+    /// payloads by design, so this is the moment the file gets read again.
+    fn open_detail(&mut self) {
+        let Some(row) = self.state.selected().and_then(|i| self.rows.get(i)) else {
+            return;
+        };
+        let Some(Ok(num)) = row.first().map(|s| s.trim().parse::<u64>()) else {
+            return;
+        };
+        match crate::capture::read_packet_at(&self.file, num) {
+            Ok((bytes, link)) => {
+                let fields = dissect::tree(&bytes, link);
+                // Values line up against the longest label rather than a
+                // guessed constant, so a long one cannot run into its value.
+                let pad = fields
+                    .iter()
+                    .map(|f| f.label.chars().count() + 2 * f.depth as usize)
+                    .max()
+                    .unwrap_or(16)
+                    + 2;
+                let mut lines: Vec<Line<'static>> = Vec::new();
+                for fld in fields {
+                    let indent = "  ".repeat(fld.depth as usize);
+                    let width = pad.saturating_sub(2 * fld.depth as usize);
+                    let label = format!("{indent}{:<width$}", fld.label, width = width);
+                    let style = if fld.depth == 0 {
+                        Style::new().fg(Color::Cyan).bold()
+                    } else {
+                        Style::new().fg(Color::DarkGray)
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(label, style),
+                        Span::raw(fld.value),
+                    ]));
+                }
+                lines.push(Line::raw(""));
+                for h in dissect::hex_dump(&bytes, 512) {
+                    lines.push(Line::styled(h, Style::new().fg(Color::Gray)));
+                }
+                self.detail = Some(Detail {
+                    num,
+                    lines,
+                    scroll: 0,
+                });
+            }
+            Err(e) => self.error = Some(first_line(&e.to_string())),
+        }
+    }
+
+    /// Everything said on this conversation, in the packets view. The filter it
+    /// writes is ordinary SQL, so it can be edited afterwards like any other.
+    fn follow(&mut self) {
+        let Some(row) = self.state.selected().and_then(|i| self.rows.get(i)) else {
+            return;
+        };
+        let (Some(client), Some(server)) = (row.first(), row.get(1)) else {
+            return;
+        };
+        let (a_ip, a_port) = split_endpoint(client);
+        let (b_ip, b_port) = split_endpoint(server);
+
+        // Both directions, because a conversation is not one-way. Ports are
+        // left out when the protocol had none rather than guessed at.
+        let side = |ip: &str, port: Option<u16>, other: &str, other_port: Option<u16>| {
+            let mut parts = vec![format!("src_ip = '{ip}'"), format!("dst_ip = '{other}'")];
+            if let Some(p) = port {
+                parts.push(format!("src_port = {p}"));
+            }
+            if let Some(p) = other_port {
+                parts.push(format!("dst_port = {p}"));
+            }
+            format!("({})", parts.join(" AND "))
+        };
+        self.filter = format!(
+            "{} OR {}",
+            side(&a_ip, a_port, &b_ip, b_port),
+            side(&b_ip, b_port, &a_ip, a_port)
+        );
+        self.view = View::Packets;
+    }
+
     fn move_by(&mut self, delta: isize) {
         if self.rows.is_empty() {
             return;
@@ -334,6 +458,16 @@ impl App {
             // on screen and the box says what was wrong with it.
             Err(e) => self.error = Some(first_line(&e.to_string())),
         }
+    }
+}
+
+/// Split "address:port" back into its parts. The address half may itself hold
+/// colons — IPv6 — so the split is on the last one, and a port of "-" means the
+/// protocol had none.
+fn split_endpoint(s: &str) -> (String, Option<u16>) {
+    match s.rsplit_once(':') {
+        Some((ip, port)) => (ip.to_string(), port.parse().ok()),
+        None => (s.to_string(), None),
     }
 }
 
@@ -598,20 +732,67 @@ fn draw(f: &mut Frame, app: &mut App) {
     // ── keys ────────────────────────────────────────────────────────────────
     let key = Style::new().fg(Color::Cyan).bold();
     let dim = Style::new().fg(Color::DarkGray);
+    let mut keys = vec![
+        Span::styled(" Tab", key),
+        Span::styled(" view   ", dim),
+        Span::styled("/", key),
+        Span::styled(" filter   ", dim),
+    ];
+    // The two keys that only mean something in one view are only offered there.
+    match app.view {
+        View::Packets => {
+            keys.push(Span::styled("Enter", key));
+            keys.push(Span::styled(" dissect   ", dim));
+        }
+        View::Flows => {
+            keys.push(Span::styled("f", key));
+            keys.push(Span::styled(" follow   ", dim));
+        }
+    }
+    keys.extend([
+        Span::styled("j k", key),
+        Span::styled(" move   ", dim),
+        Span::styled("g G", key),
+        Span::styled(" ends   ", dim),
+        Span::styled("q", key),
+        Span::styled(" quit", dim),
+    ]);
+    f.render_widget(Paragraph::new(Line::from(keys)), chunks[3]);
+
+    if app.detail.is_some() {
+        draw_detail(f, app);
+    }
+}
+
+/// The packet, over the top of everything else. It is a reading pane, so it
+/// takes most of the screen rather than a polite little box.
+fn draw_detail(f: &mut Frame, app: &App) {
+    let Some(d) = &app.detail else { return };
+    let area = f.area();
+    let w = area.width.saturating_sub(8).clamp(20, 100);
+    let h = area.height.saturating_sub(4).max(6);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+
+    f.render_widget(Clear, popup);
     f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" Tab", key),
-            Span::styled(" switch view   ", dim),
-            Span::styled("/", key),
-            Span::styled(" filter   ", dim),
-            Span::styled("j k ↑ ↓", key),
-            Span::styled(" move   ", dim),
-            Span::styled("g G", key),
-            Span::styled(" top bottom   ", dim),
-            Span::styled("q", key),
-            Span::styled(" quit", dim),
-        ])),
-        chunks[3],
+        Paragraph::new(d.lines.clone())
+            .scroll((d.scroll, 0))
+            .wrap(Wrap { trim: false })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::new().fg(Color::Cyan))
+                    .title(format!(
+                        " packet {} — j k scroll, Esc closes ",
+                        n(d.num as usize)
+                    )),
+            ),
+        popup,
     );
 }
 
@@ -738,6 +919,8 @@ mod tests {
 
     fn demo_app() -> App {
         App {
+            file: std::path::PathBuf::new(),
+            detail: None,
             view: View::Flows,
             filter: String::new(),
             editing: false,
@@ -850,7 +1033,7 @@ mod tests {
         );
         // The key line is the only documentation a first-time user gets.
         assert!(
-            text.contains("switch view") && text.contains("quit"),
+            text.contains(" view") && text.contains("quit"),
             "keys missing:
 {text}"
         );
@@ -865,6 +1048,7 @@ mod tests {
         let mut app = demo_app();
         app.view = View::Packets;
         app.rows = vec![row(&[
+            "41288",
             "1700000000.523",
             "192.168.1.12:51000",
             "140.82.114.25:443",
@@ -895,6 +1079,152 @@ mod tests {
             "info column lost:
 {text}"
         );
+    }
+
+    /// Write a one-packet pcap so the whole detail path can be exercised: read
+    /// the file back by packet number, take the frame apart, lay it out.
+    fn one_packet_pcap() -> std::path::PathBuf {
+        let mut tcp = Vec::new();
+        tcp.extend_from_slice(&51000u16.to_be_bytes());
+        tcp.extend_from_slice(&443u16.to_be_bytes());
+        tcp.extend_from_slice(&0x1234_5678u32.to_be_bytes());
+        tcp.extend_from_slice(&9u32.to_be_bytes());
+        tcp.push(5 << 4);
+        tcp.push(0x18); // PSH + ACK
+        tcp.extend_from_slice(&64240u16.to_be_bytes());
+        tcp.extend_from_slice(&[0, 0, 0, 0]);
+        tcp.extend_from_slice(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n");
+
+        let mut ip = vec![0x45, 0];
+        ip.extend_from_slice(&((20 + tcp.len()) as u16).to_be_bytes());
+        ip.extend_from_slice(&0xbeefu16.to_be_bytes());
+        ip.extend_from_slice(&0x4000u16.to_be_bytes());
+        ip.extend_from_slice(&[64, 6, 0, 0]);
+        ip.extend_from_slice(&[192, 168, 1, 10]);
+        ip.extend_from_slice(&[93, 184, 216, 34]);
+        ip.extend_from_slice(&tcp);
+
+        let mut frame = vec![0x11; 6];
+        frame.extend_from_slice(&[0x22; 6]);
+        frame.extend_from_slice(&0x0800u16.to_be_bytes());
+        frame.extend_from_slice(&ip);
+
+        let mut out = Vec::new();
+        out.extend_from_slice(&0xa1b2c3d4u32.to_be_bytes());
+        out.extend_from_slice(&2u16.to_be_bytes());
+        out.extend_from_slice(&4u16.to_be_bytes());
+        out.extend_from_slice(&0i32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&65535u32.to_be_bytes());
+        out.extend_from_slice(&1u32.to_be_bytes());
+        out.extend_from_slice(&1_700_000_000u32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&(frame.len() as u32).to_be_bytes());
+        out.extend_from_slice(&(frame.len() as u32).to_be_bytes());
+        out.extend_from_slice(&frame);
+
+        let dir = std::env::temp_dir().join("falconnet_tui_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("one.pcap");
+        std::fs::write(&path, out).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_packet_can_be_taken_apart_from_the_list() {
+        let path = one_packet_pcap();
+        let mut app = demo_app();
+        app.file = path;
+        app.view = View::Packets;
+        app.rows = vec![row(&[
+            "1",
+            "1700000000.0",
+            "192.168.1.12:51000",
+            "93.184.216.34:80",
+            "TCP",
+            "94",
+            "PSH,ACK",
+            "GET / HTTP/1.1",
+        ])];
+        app.state.select(Some(0));
+
+        app.open_detail();
+        assert!(app.detail.is_some(), "detail did not open: {:?}", app.error);
+
+        // Tall enough that the whole packet fits without scrolling, so the
+        // assertions below are about the layout and not about the fold.
+        let text = render_to_text(&mut app, 110, 46);
+        println!(
+            "
+{text}"
+        );
+
+        for expected in [
+            "packet 1",
+            "Ethernet",
+            "11:11:11:11:11:11",
+            "IPv4",
+            "192.168.1.10",
+            "time to live",
+            "TCP",
+            "sequence",
+            "305419896",
+            "ACK, PSH",
+            "HTTP",
+            "example.com",
+        ] {
+            assert!(
+                text.contains(expected),
+                "missing {expected}:
+{text}"
+            );
+        }
+        // The bytes themselves, in the layout every tool uses.
+        assert!(
+            text.contains("0000  11 11 11 11 11 11"),
+            "no hex dump:
+{text}"
+        );
+        assert!(
+            text.contains("GET / HTTP"),
+            "ascii column missing:
+{text}"
+        );
+    }
+
+    /// Following a conversation writes an ordinary SQL condition, so it can be
+    /// edited afterwards like any filter typed by hand.
+    #[test]
+    fn following_a_conversation_writes_a_filter_for_both_directions() {
+        let mut app = demo_app();
+        app.state.select(Some(1)); // the refused one
+        app.follow();
+
+        assert_eq!(app.view, View::Packets);
+        assert!(
+            app.filter.contains("src_ip = '192.168.1.12'"),
+            "{}",
+            app.filter
+        );
+        assert!(app.filter.contains("dst_port = 5432"), "{}", app.filter);
+        // Both directions, or half the conversation goes missing.
+        assert!(app.filter.contains("src_ip = '10.0.4.7'"), "{}", app.filter);
+        assert!(app.filter.contains(" OR "), "{}", app.filter);
+    }
+
+    #[test]
+    fn an_endpoint_splits_on_its_last_colon() {
+        assert_eq!(
+            split_endpoint("10.0.0.1:443"),
+            ("10.0.0.1".into(), Some(443))
+        );
+        // IPv6 holds colons of its own; only the last one is the port.
+        assert_eq!(
+            split_endpoint("2001:db8::1:443"),
+            ("2001:db8::1".into(), Some(443))
+        );
+        // A protocol with no ports says so rather than inventing zero.
+        assert_eq!(split_endpoint("10.0.0.1:-"), ("10.0.0.1".into(), None));
     }
 
     #[test]

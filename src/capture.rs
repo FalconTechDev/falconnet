@@ -12,7 +12,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use datafusion::arrow::array::{
-    ArrayRef, Float64Builder, StringBuilder, UInt16Builder, UInt32Builder, UInt8Builder,
+    ArrayRef, Float64Builder, StringBuilder, UInt16Builder, UInt32Builder, UInt64Builder,
+    UInt8Builder,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
@@ -26,6 +27,7 @@ const BATCH_ROWS: usize = 65_536;
 
 pub fn schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
+        Field::new("num", DataType::UInt64, false),
         Field::new("ts", DataType::Float64, false),
         Field::new("src_ip", DataType::Utf8, true),
         Field::new("dst_ip", DataType::Utf8, true),
@@ -44,6 +46,10 @@ pub fn schema() -> SchemaRef {
 
 /// What each column means, for `falconnet schema`.
 pub const DOCS: &[(&str, &str)] = &[
+    (
+        "num",
+        "position in the file, counting from 1 — the packet's name",
+    ),
     ("ts", "capture timestamp, epoch seconds"),
     ("src_ip", "source address; null for non-IP frames"),
     ("dst_ip", "destination address"),
@@ -67,6 +73,7 @@ pub const DOCS: &[(&str, &str)] = &[
 
 /// Accumulates rows and flushes fixed-size Arrow batches.
 struct Batcher {
+    num: UInt64Builder,
     ts: Float64Builder,
     src_ip: StringBuilder,
     dst_ip: StringBuilder,
@@ -81,6 +88,8 @@ struct Batcher {
     host: StringBuilder,
     info: StringBuilder,
     rows: usize,
+    /// Packets seen so far, which is what `num` counts.
+    seen: u64,
     out: Vec<RecordBatch>,
     /// Conversations are folded up in the same pass over the file.
     tracker: Tracker,
@@ -103,6 +112,7 @@ pub struct Capture {
 impl Batcher {
     fn new() -> Self {
         Self {
+            num: UInt64Builder::with_capacity(BATCH_ROWS),
             ts: Float64Builder::with_capacity(BATCH_ROWS),
             src_ip: StringBuilder::new(),
             dst_ip: StringBuilder::new(),
@@ -117,6 +127,7 @@ impl Batcher {
             host: StringBuilder::new(),
             info: StringBuilder::new(),
             rows: 0,
+            seen: 0,
             out: Vec::new(),
             tracker: Tracker::new(),
         }
@@ -124,6 +135,10 @@ impl Batcher {
 
     fn push(&mut self, r: PacketRow) -> Result<()> {
         self.tracker.observe(&r);
+        // Counting from one, so the number shown is the number a person would
+        // say out loud — and the number `falconnet packet` takes back.
+        self.seen += 1;
+        self.num.append_value(self.seen);
         self.ts.append_value(r.ts);
         self.src_ip.append_option(r.src_ip);
         self.dst_ip.append_option(r.dst_ip);
@@ -150,6 +165,7 @@ impl Batcher {
             return Ok(());
         }
         let cols: Vec<ArrayRef> = vec![
+            Arc::new(self.num.finish()),
             Arc::new(self.ts.finish()),
             Arc::new(self.src_ip.finish()),
             Arc::new(self.dst_ip.finish()),
@@ -361,4 +377,69 @@ fn read_pcapng(reader: BufReader<File>) -> Result<Capture> {
         }
     }
     b.finish(truncated)
+}
+
+/// Fetch one packet's raw bytes by its `num`, for the detail view.
+///
+/// The columns deliberately drop the payload — that is what makes a 10 GB
+/// capture answer in milliseconds — so the bytes have to come back from the
+/// file when someone actually asks to see one. The scan is sequential, which
+/// costs a read of the file up to that packet: fine for a keystroke, and the
+/// price of not carrying every payload in memory for the one packet in a
+/// million anybody looks at.
+pub fn read_packet_at(path: &Path, num: u64) -> Result<(Vec<u8>, Link)> {
+    let mut probe = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let mut magic = [0u8; 4];
+    probe.read_exact(&mut magic).context("file is too short")?;
+    probe.seek(SeekFrom::Start(0))?;
+    let reader = BufReader::with_capacity(1 << 20, probe);
+
+    match u32::from_be_bytes(magic) {
+        0x0a0d_0d0a => {
+            use pcap_file::pcapng::{Block, PcapNgReader};
+            let mut rdr = PcapNgReader::new(reader).context("reading pcapng header")?;
+            let mut links: Vec<Link> = Vec::new();
+            let mut seen = 0u64;
+            while let Some(block) = rdr.next_block() {
+                match block.context("reading block")? {
+                    Block::SectionHeader(_) => links.clear(),
+                    Block::InterfaceDescription(idb) => links.push(link_of(idb.linktype)),
+                    Block::EnhancedPacket(p) => {
+                        seen += 1;
+                        if seen == num {
+                            let link = links
+                                .get(p.interface_id as usize)
+                                .copied()
+                                .unwrap_or(Link::Ethernet);
+                            return Ok((p.data.into_owned(), link));
+                        }
+                    }
+                    Block::SimplePacket(p) => {
+                        seen += 1;
+                        if seen == num {
+                            let link = links.first().copied().unwrap_or(Link::Ethernet);
+                            return Ok((p.data.into_owned(), link));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            anyhow::bail!("the capture holds no packet number {num}")
+        }
+        0xa1b2_c3d4 | 0xd4c3_b2a1 | 0xa1b2_3c4d | 0x4d3c_b2a1 => {
+            use pcap_file::pcap::PcapReader;
+            let mut rdr = PcapReader::new(reader).context("reading pcap header")?;
+            let link = link_of(rdr.header().datalink);
+            let mut seen = 0u64;
+            while let Some(pkt) = rdr.next_packet() {
+                let pkt = pkt.context("reading packet")?;
+                seen += 1;
+                if seen == num {
+                    return Ok((pkt.data.into_owned(), link));
+                }
+            }
+            anyhow::bail!("the capture holds no packet number {num}")
+        }
+        other => anyhow::bail!("not a capture file: magic {other:#010x}"),
+    }
 }

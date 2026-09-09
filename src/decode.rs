@@ -58,7 +58,7 @@ pub enum Link {
 impl Link {
     /// The payload after the link header, or None when this frame carries no
     /// network layer we can reach.
-    fn network<'a>(self, data: &'a [u8]) -> Option<SlicedPacket<'a>> {
+    pub fn network<'a>(self, data: &'a [u8]) -> Option<SlicedPacket<'a>> {
         match self {
             Link::Ethernet => SlicedPacket::from_ethernet(data).ok(),
             Link::RawIp => SlicedPacket::from_ip(data).ok(),

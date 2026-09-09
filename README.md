@@ -182,6 +182,45 @@ That frame is not a mock-up: the layout is rendered to a text buffer in a test,
 so it is checked on every run — headings present, no column truncated away, no
 line spilling past the terminal width.
 
+## One packet, taken apart
+
+The thing you open Wireshark for. In the terminal browser, `Enter` on a packet
+opens it; from the command line it is a subcommand:
+
+```
+$ falconnet packet capture.pcap 196619
+Frame              133 bytes captured
+Ethernet           aa:bb:cc:00:00:02 → aa:bb:cc:00:00:01
+  ethertype        0x0800 IPv4
+IPv4               192.168.1.17 → 104.18.32.7
+  identification   0x65dc
+  time to live     64
+TCP                49391 → 443
+  sequence         3278745566
+  flags            ACK, PSH
+  window           64240
+  payload          79 bytes
+TLS                Client Hello TLS 1.2 (gateway.discord.gg)
+  host             gateway.discord.gg
+
+0060  00 00 00 02 13 01 01 00  00 1b 00 00 00 17 00 15  ................
+0070  00 00 12 67 61 74 65 77  61 79 2e 64 69 73 63 6f  ...gateway.disco
+0080  72 64 2e 67 67                                    rd.gg
+```
+
+The columns deliberately throw the payload away — that is what lets a 10 GB
+capture answer in milliseconds — so the bytes are fetched back from the file
+when someone actually asks to see one. Reaching packet 196 619 of 200 022 takes
+**94 ms**, which is the price of not carrying every payload in memory for the
+one packet in a million anybody looks at.
+
+The application layer here is read by the same code the `info` column uses, so
+the detail view and the table can never disagree about a packet.
+
+`f` on a conversation writes the filter that selects it in both directions and
+switches to the packets view — follow-the-stream, except the filter it leaves
+behind is ordinary SQL you can go on editing.
+
 ## In a browser
 
 ```bash

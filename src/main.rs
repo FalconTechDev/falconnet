@@ -7,6 +7,7 @@
 mod app;
 mod capture;
 mod decode;
+mod dissect;
 mod flows;
 mod procs;
 mod serve;
@@ -61,6 +62,12 @@ enum Cmd {
         #[arg(long)]
         sockets: bool,
     },
+    /// Take one packet apart, field by field, with its bytes.
+    Packet {
+        file: PathBuf,
+        /// Its `num` — the position shown in the packets table.
+        num: u64,
+    },
     /// Print the columns a query can name.
     Schema,
 }
@@ -90,6 +97,7 @@ async fn main() -> Result<()> {
         }
         Cmd::Stat { file } => stat(&file).await,
         Cmd::Who { sockets } => who(sockets),
+        Cmd::Packet { file, num } => packet(&file, num),
         Cmd::Serve { file, port } => {
             let (ctx, loaded) = load(&file).await?;
             let name = file
@@ -100,7 +108,7 @@ async fn main() -> Result<()> {
         }
         Cmd::Tui { file } => {
             let (ctx, _) = load(&file).await?;
-            tui::run(&ctx).await
+            tui::run(&ctx, &file).await
         }
         Cmd::Triage { file } => {
             let (ctx, loaded) = load(&file).await?;
@@ -160,6 +168,36 @@ async fn load(file: &Path) -> Result<(SessionContext, Loaded)> {
         Arc::new(MemTable::try_new(flows::schema(), vec![cap.flows])?),
     )?;
     Ok((ctx, loaded))
+}
+
+/// One packet, taken apart. The same tree the TUI shows behind Enter, so the
+/// two can never drift into disagreeing about a packet.
+fn packet(file: &Path, num: u64) -> Result<()> {
+    let t = Instant::now();
+    let (bytes, link) = capture::read_packet_at(file, num)?;
+    let fetched = t.elapsed().as_secs_f64() * 1000.0;
+
+    let fields = dissect::tree(&bytes, link);
+    // Values line up against the longest label, so a long one never runs into
+    // its value — the same rule the overlay uses.
+    let pad = fields
+        .iter()
+        .map(|f| f.label.chars().count() + 2 * f.depth as usize)
+        .max()
+        .unwrap_or(16)
+        + 2;
+    for f in &fields {
+        let indent = "  ".repeat(f.depth as usize);
+        let width = pad.saturating_sub(2 * f.depth as usize);
+        println!("{indent}{:<width$}{}", f.label, f.value, width = width);
+    }
+    println!();
+    for line in dissect::hex_dump(&bytes, 2048) {
+        println!("{line}");
+    }
+    eprintln!();
+    eprintln!("fetched in {fetched:.0} ms");
+    Ok(())
 }
 
 /// The live connection table, attributed to the programs that own it.

@@ -633,3 +633,102 @@ fn a_capture_cut_mid_packet_keeps_what_it_has_and_says_so() {
         "the loss must be reported:\n{stderr}"
     );
 }
+
+// ─── link-layer types ───────────────────────────────────────────────────────
+
+/// Write a pcap whose header declares `linktype`, with frames already in that
+/// framing.
+fn write_pcap_link(path: &std::path::Path, linktype: u32, frames: &[Vec<u8>]) {
+    let mut out = Vec::new();
+    out.extend_from_slice(&0xa1b2c3d4u32.to_be_bytes());
+    out.extend_from_slice(&2u16.to_be_bytes());
+    out.extend_from_slice(&4u16.to_be_bytes());
+    out.extend_from_slice(&0i32.to_be_bytes());
+    out.extend_from_slice(&0u32.to_be_bytes());
+    out.extend_from_slice(&65535u32.to_be_bytes());
+    out.extend_from_slice(&linktype.to_be_bytes());
+    for (i, f) in frames.iter().enumerate() {
+        out.extend_from_slice(&(1_700_000_000u32 + i as u32).to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&(f.len() as u32).to_be_bytes());
+        out.extend_from_slice(&(f.len() as u32).to_be_bytes());
+        out.extend_from_slice(f);
+    }
+    std::fs::write(path, out).unwrap();
+}
+
+/// Strip the 14-byte Ethernet header off a frame built by `tcp_frame`, leaving
+/// the bare IP packet the other framings wrap differently.
+fn ip_of(frame: &[u8]) -> Vec<u8> {
+    frame[14..].to_vec()
+}
+
+/// A capture file states its link-layer type, and assuming Ethernet is wrong
+/// for some of the most ordinary sources there are: `tcpdump -i any` writes
+/// Linux SLL, tunnels write bare IP, loopback writes a 4-byte family header.
+/// Decoding those as Ethernet does not fail — it yields a capture in which
+/// every packet looks like a non-IP frame with no addresses, which reads as
+/// "there was nothing interesting here".
+#[test]
+fn every_supported_link_layer_yields_the_same_packet() {
+    let dir = std::env::temp_dir().join("falconet_decode_test");
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let eth = tcp_frame([192, 168, 1, 10], [93, 184, 216, 34], 51000, 443, 0x02, &[]);
+    let ip = ip_of(&eth);
+
+    // Linux SLL: 16 bytes, with the ethertype in the last two.
+    let mut sll = vec![0u8; 14];
+    sll.extend_from_slice(&0x0800u16.to_be_bytes());
+    sll.extend_from_slice(&ip);
+
+    // Linux SLL2: 20 bytes, ethertype first.
+    let mut sll2 = Vec::new();
+    sll2.extend_from_slice(&0x0800u16.to_be_bytes());
+    sll2.extend_from_slice(&[0u8; 18]);
+    sll2.extend_from_slice(&ip);
+
+    // BSD loopback: a 4-byte address family in host byte order.
+    let mut null = 2u32.to_le_bytes().to_vec();
+    null.extend_from_slice(&ip);
+
+    for (name, linktype, frame) in [
+        ("ethernet", 1u32, eth.clone()),
+        ("raw ip", 101, ip.clone()),
+        ("linux sll", 113, sll),
+        ("linux sll2", 276, sll2),
+        ("loopback", 0, null),
+    ] {
+        let path = dir.join(format!("link_{linktype}.pcap"));
+        write_pcap_link(&path, linktype, &[frame]);
+        let out = query(&path, "SELECT proto, src_ip, dst_port FROM packets");
+        assert!(out.contains("TCP"), "{name}: transport not reached:\n{out}");
+        assert!(out.contains("192.168.1.10"), "{name}: address lost:\n{out}");
+        assert!(out.contains("443"), "{name}: port lost:\n{out}");
+    }
+}
+
+/// A link type we cannot strip must say so. Reporting nothing would be
+/// indistinguishable from a capture that genuinely held no IP traffic.
+#[test]
+fn an_unsupported_link_layer_is_announced() {
+    let dir = std::env::temp_dir().join("falconet_decode_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("link_usb.pcap");
+
+    let eth = tcp_frame([10, 0, 0, 1], [10, 0, 0, 2], 51000, 443, 0x02, &[]);
+    write_pcap_link(&path, 189, &[ip_of(&eth)]); // 189 = USB on Linux
+
+    let out = falconet()
+        .arg("query")
+        .arg(&path)
+        .arg("SELECT COUNT(*) AS n FROM packets")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "the file is still readable");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("link-layer type"),
+        "the unsupported framing must be named:\n{stderr}"
+    );
+}

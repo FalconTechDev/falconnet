@@ -34,10 +34,50 @@ pub struct PacketRow {
     pub info: Option<String>,
 }
 
-/// Decode one Ethernet frame. Returns a row even when upper layers fail to
-/// parse — a malformed packet is still a fact about the capture, and dropping
-/// it would silently skew every count.
-pub fn decode(ts: f64, wire_len: u32, data: &[u8]) -> PacketRow {
+/// What the bytes of a frame start with. A capture file declares this once,
+/// and assuming Ethernet is wrong for some of the most ordinary sources there
+/// are: `tcpdump -i any` writes Linux SLL, VPN and tunnel interfaces write bare
+/// IP, and a loopback capture writes its own four-byte family header. Decoding
+/// any of those as Ethernet does not fail — it quietly yields a capture where
+/// every packet looks like a non-IP frame with no addresses at all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Link {
+    Ethernet,
+    /// A bare IPv4 or IPv6 packet, no link header.
+    RawIp,
+    /// Linux "cooked" capture, 16-byte header.
+    LinuxSll,
+    /// Its v2 form, 20 bytes.
+    LinuxSll2,
+    /// BSD loopback: a 4-byte address family in host byte order.
+    Null,
+    /// Recognised as something we do not strip; reported rather than guessed at.
+    Unsupported,
+}
+
+impl Link {
+    /// The payload after the link header, or None when this frame carries no
+    /// network layer we can reach.
+    fn network<'a>(self, data: &'a [u8]) -> Option<SlicedPacket<'a>> {
+        match self {
+            Link::Ethernet => SlicedPacket::from_ethernet(data).ok(),
+            Link::RawIp => SlicedPacket::from_ip(data).ok(),
+            // The family / protocol fields in the headers below are redundant
+            // here: `from_ip` reads the version nibble of the packet itself, so
+            // it sorts IPv4 from IPv6 without them, and anything that is
+            // neither simply fails to parse.
+            Link::LinuxSll => SlicedPacket::from_ip(data.get(16..)?).ok(),
+            Link::LinuxSll2 => SlicedPacket::from_ip(data.get(20..)?).ok(),
+            Link::Null => SlicedPacket::from_ip(data.get(4..)?).ok(),
+            Link::Unsupported => None,
+        }
+    }
+}
+
+/// Decode one frame. Returns a row even when upper layers fail to parse — a
+/// malformed packet is still a fact about the capture, and dropping it would
+/// silently skew every count.
+pub fn decode(ts: f64, wire_len: u32, data: &[u8], link: Link) -> PacketRow {
     let mut row = PacketRow {
         ts,
         len: wire_len,
@@ -45,7 +85,7 @@ pub fn decode(ts: f64, wire_len: u32, data: &[u8]) -> PacketRow {
         ..Default::default()
     };
 
-    let Ok(sliced) = SlicedPacket::from_ethernet(data) else {
+    let Some(sliced) = link.network(data) else {
         return row;
     };
 

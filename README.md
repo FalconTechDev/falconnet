@@ -223,6 +223,16 @@ the packets were all there, in the right order, with plausible times. falconet
 now reads `if_tsresol` itself, including its power-of-two form, and a test pins
 five resolutions to the same instant.
 
+**Every capture that was not Ethernet decoded to nothing.** A capture file
+declares its link-layer type and this read none of it, framing every frame as
+Ethernet. `tcpdump -i any` writes Linux SLL; tunnels and VPN interfaces write
+bare IP; loopback writes a four-byte address family. All of them produced a
+table where every packet was a non-IP frame with no addresses — which reads
+exactly like a capture that held nothing worth seeing. Ethernet, raw IP, Linux
+SLL and SLL2, and loopback are now stripped according to what the file says,
+per interface in pcapng, and a framing this build does not know is named on
+stderr rather than passed off as empty.
+
 **A capture cut off mid-packet was rejected whole.** Captures get truncated
 constantly — Ctrl+C, a full disk, a file copied while still being written — and
 throwing away every packet that did arrive is the wrong answer. So is reading
@@ -244,6 +254,7 @@ them.
 | Flows have no idle timeout | Two exchanges that reuse a source port merge into one conversation, overstating its duration. `triage` works around this where it matters by measuring only two-packet DNS exchanges, where the duration *is* the response time |
 | No live capture yet | `who` reads the connection table; capturing packets off an interface needs Npcap and is not implemented |
 | Timestamps are `f64` seconds | At present-day epoch values that leaves about a quarter-microsecond of resolution, so nanosecond captures lose their last digits |
+| Five link-layer types are handled | Ethernet, raw IP, Linux SLL and SLL2, loopback. Anything else is read but reports no addresses, and says so |
 | Only DNS, TLS and HTTP are dissected | Anything else is visible as addresses, ports and sizes only |
 | No TCP stream reassembly | A header split across segments is not seen; `payload_len` is per packet |
 | IPv6 is parsed but untested against real traffic | Addresses and ports are read; extension-header chains have had no exercise |

@@ -17,7 +17,7 @@ use datafusion::arrow::array::{
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 
-use crate::decode::{decode, PacketRow};
+use crate::decode::{decode, Link, PacketRow};
 use crate::flows::Tracker;
 
 /// Rows per batch. Small enough that per-batch statistics stay selective,
@@ -210,11 +210,25 @@ fn read_pcap(reader: BufReader<File>) -> Result<Capture> {
     use pcap_file::pcap::PcapReader;
 
     let mut rdr = PcapReader::new(reader).context("reading pcap header")?;
+    let datalink = rdr.header().datalink;
+    let link = link_of(datalink);
     let mut b = Batcher::new();
-    let mut truncated = None;
+    let mut truncated = if link == Link::Unsupported {
+        Some(format!(
+            "the capture's link-layer type ({datalink:?}) is not one this build \
+             knows how to strip, so no addresses could be read from it"
+        ))
+    } else {
+        None
+    };
     while let Some(pkt) = rdr.next_packet() {
         match pkt {
-            Ok(pkt) => b.push(decode(pkt.timestamp.as_secs_f64(), pkt.orig_len, &pkt.data))?,
+            Ok(pkt) => b.push(decode(
+                pkt.timestamp.as_secs_f64(),
+                pkt.orig_len,
+                &pkt.data,
+                link,
+            ))?,
             Err(e) => {
                 truncated = Some(format!("the file ends mid-packet ({e})"));
                 break;
@@ -224,20 +238,38 @@ fn read_pcap(reader: BufReader<File>) -> Result<Capture> {
     b.finish(truncated)
 }
 
-/// How to turn one interface's raw timestamp counter into seconds.
-struct TimeScale {
-    /// Seconds per unit of the counter.
+/// Translate the file's declared link-layer type. Anything not listed is
+/// reported as unsupported rather than decoded as Ethernet and hoped for.
+fn link_of(dl: pcap_file::DataLink) -> Link {
+    use pcap_file::DataLink as D;
+    match dl {
+        D::ETHERNET => Link::Ethernet,
+        D::RAW | D::IPV4 | D::IPV6 => Link::RawIp,
+        D::LINUX_SLL => Link::LinuxSll,
+        D::LINUX_SLL2 => Link::LinuxSll2,
+        D::NULL | D::LOOP => Link::Null,
+        _ => Link::Unsupported,
+    }
+}
+
+/// What one pcapng interface says about its own packets.
+struct Iface {
+    /// Seconds per unit of the timestamp counter.
     per_unit: f64,
     /// Seconds to add, from `if_tsoffset`.
     offset: f64,
+    /// What its frames start with. A pcapng file may describe several
+    /// interfaces, and they need not agree.
+    link: Link,
 }
 
-impl Default for TimeScale {
+impl Default for Iface {
     fn default() -> Self {
         // The spec's default when `if_tsresol` is absent: microseconds.
-        TimeScale {
+        Iface {
             per_unit: 1e-6,
             offset: 0.0,
+            link: Link::Ethernet,
         }
     }
 }
@@ -248,15 +280,15 @@ fn read_pcapng(reader: BufReader<File>) -> Result<Capture> {
 
     let mut rdr = PcapNgReader::new(reader).context("reading pcapng header")?;
     let mut b = Batcher::new();
+    let mut truncated = None;
 
     // A pcapng timestamp is a bare counter whose unit each interface declares.
     // pcap-file does not read `if_tsresol`: it hands the raw counter back
     // inside a Duration built with `from_nanos`, so every capture from
     // Wireshark — which uses microseconds — would land 1000x off if taken at
     // face value. The counter is recovered with `as_nanos` and scaled here.
-    let mut scales: Vec<TimeScale> = Vec::new();
+    let mut ifaces: Vec<Iface> = Vec::new();
 
-    let mut truncated = None;
     while let Some(block) = rdr.next_block() {
         let block = match block {
             Ok(b) => b,
@@ -268,45 +300,59 @@ fn read_pcapng(reader: BufReader<File>) -> Result<Capture> {
         match block {
             // Interfaces are numbered per section, so a new section restarts
             // the numbering and the old scales no longer apply.
-            Block::SectionHeader(_) => scales.clear(),
+            Block::SectionHeader(_) => ifaces.clear(),
 
             Block::InterfaceDescription(idb) => {
-                let mut scale = TimeScale::default();
+                let mut iface = Iface {
+                    link: link_of(idb.linktype),
+                    ..Iface::default()
+                };
+                if iface.link == Link::Unsupported && truncated.is_none() {
+                    truncated = Some(format!(
+                        "interface {} declares link-layer type {:?}, which this build \
+                         does not know how to strip, so its packets carry no addresses",
+                        ifaces.len(),
+                        idb.linktype
+                    ));
+                }
                 for opt in &idb.options {
                     match opt {
                         Opt::IfTsResol(r) => {
-                            scale.per_unit = if r & 0x80 != 0 {
+                            iface.per_unit = if r & 0x80 != 0 {
                                 // Top bit set: the rest is a power of two.
                                 2f64.powi(-((r & 0x7F) as i32))
                             } else {
                                 10f64.powi(-(*r as i32))
                             };
                         }
-                        Opt::IfTsOffset(o) => scale.offset = *o as f64,
+                        Opt::IfTsOffset(o) => iface.offset = *o as f64,
                         _ => {}
                     }
                 }
-                scales.push(scale);
+                ifaces.push(iface);
             }
 
             Block::EnhancedPacket(p) => {
                 let raw = p.timestamp.as_nanos() as u64;
-                let scale = scales
-                    .get(p.interface_id as usize)
-                    .map(|s| (s.per_unit, s.offset))
-                    // A packet naming an interface we never saw described is
-                    // malformed; the spec default is the least wrong guess.
-                    .unwrap_or((1e-6, 0.0));
+                // A packet naming an interface we never saw described is
+                // malformed; the spec defaults are the least wrong guess.
+                let fallback = Iface::default();
+                let iface = ifaces.get(p.interface_id as usize).unwrap_or(&fallback);
                 b.push(decode(
-                    raw as f64 * scale.0 + scale.1,
+                    raw as f64 * iface.per_unit + iface.offset,
                     p.original_len,
                     &p.data,
+                    iface.link,
                 ))?;
             }
 
             // A simple packet block carries no timestamp by design.
             Block::SimplePacket(p) => {
-                b.push(decode(0.0, p.original_len, &p.data))?;
+                // Simple packet blocks carry neither a timestamp nor an
+                // interface id; the section's first interface is the only
+                // sensible reading of which link layer they use.
+                let link = ifaces.first().map(|i| i.link).unwrap_or(Link::Ethernet);
+                b.push(decode(0.0, p.original_len, &p.data, link))?;
             }
 
             // Name resolution, statistics and the rest carry no packets —

@@ -92,6 +92,12 @@ pub struct Capture {
     pub flows: Vec<RecordBatch>,
     pub packet_count: usize,
     pub flow_count: usize,
+    /// Set when the file ended in the middle of a record. Everything before
+    /// the break is still returned — a capture stopped with Ctrl+C or cut off
+    /// by a full disk is normal, and the packets it did get are still worth
+    /// reading. The loss is reported rather than hidden, because a silently
+    /// short capture makes every count in every answer quietly wrong.
+    pub truncated: Option<String>,
 }
 
 impl Batcher {
@@ -163,7 +169,7 @@ impl Batcher {
         Ok(())
     }
 
-    fn finish(mut self) -> Result<Capture> {
+    fn finish(mut self, truncated: Option<String>) -> Result<Capture> {
         self.flush()?;
         let packet_count = self.out.iter().map(|b| b.num_rows()).sum();
         let flow_count = self.tracker.len();
@@ -173,6 +179,7 @@ impl Batcher {
             flows,
             packet_count,
             flow_count,
+            truncated,
         })
     }
 }
@@ -204,31 +211,108 @@ fn read_pcap(reader: BufReader<File>) -> Result<Capture> {
 
     let mut rdr = PcapReader::new(reader).context("reading pcap header")?;
     let mut b = Batcher::new();
+    let mut truncated = None;
     while let Some(pkt) = rdr.next_packet() {
-        let pkt = pkt.context("reading packet")?;
-        b.push(decode(pkt.timestamp.as_secs_f64(), pkt.orig_len, &pkt.data))?;
+        match pkt {
+            Ok(pkt) => b.push(decode(pkt.timestamp.as_secs_f64(), pkt.orig_len, &pkt.data))?,
+            Err(e) => {
+                truncated = Some(format!("the file ends mid-packet ({e})"));
+                break;
+            }
+        }
     }
-    b.finish()
+    b.finish(truncated)
+}
+
+/// How to turn one interface's raw timestamp counter into seconds.
+struct TimeScale {
+    /// Seconds per unit of the counter.
+    per_unit: f64,
+    /// Seconds to add, from `if_tsoffset`.
+    offset: f64,
+}
+
+impl Default for TimeScale {
+    fn default() -> Self {
+        // The spec's default when `if_tsresol` is absent: microseconds.
+        TimeScale {
+            per_unit: 1e-6,
+            offset: 0.0,
+        }
+    }
 }
 
 fn read_pcapng(reader: BufReader<File>) -> Result<Capture> {
+    use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionOption as Opt;
     use pcap_file::pcapng::{Block, PcapNgReader};
 
     let mut rdr = PcapNgReader::new(reader).context("reading pcapng header")?;
     let mut b = Batcher::new();
+
+    // A pcapng timestamp is a bare counter whose unit each interface declares.
+    // pcap-file does not read `if_tsresol`: it hands the raw counter back
+    // inside a Duration built with `from_nanos`, so every capture from
+    // Wireshark — which uses microseconds — would land 1000x off if taken at
+    // face value. The counter is recovered with `as_nanos` and scaled here.
+    let mut scales: Vec<TimeScale> = Vec::new();
+
+    let mut truncated = None;
     while let Some(block) = rdr.next_block() {
-        match block.context("reading block")? {
-            Block::EnhancedPacket(p) => {
-                b.push(decode(p.timestamp.as_secs_f64(), p.original_len, &p.data))?;
+        let block = match block {
+            Ok(b) => b,
+            Err(e) => {
+                truncated = Some(format!("the file ends mid-block ({e})"));
+                break;
             }
+        };
+        match block {
+            // Interfaces are numbered per section, so a new section restarts
+            // the numbering and the old scales no longer apply.
+            Block::SectionHeader(_) => scales.clear(),
+
+            Block::InterfaceDescription(idb) => {
+                let mut scale = TimeScale::default();
+                for opt in &idb.options {
+                    match opt {
+                        Opt::IfTsResol(r) => {
+                            scale.per_unit = if r & 0x80 != 0 {
+                                // Top bit set: the rest is a power of two.
+                                2f64.powi(-((r & 0x7F) as i32))
+                            } else {
+                                10f64.powi(-(*r as i32))
+                            };
+                        }
+                        Opt::IfTsOffset(o) => scale.offset = *o as f64,
+                        _ => {}
+                    }
+                }
+                scales.push(scale);
+            }
+
+            Block::EnhancedPacket(p) => {
+                let raw = p.timestamp.as_nanos() as u64;
+                let scale = scales
+                    .get(p.interface_id as usize)
+                    .map(|s| (s.per_unit, s.offset))
+                    // A packet naming an interface we never saw described is
+                    // malformed; the spec default is the least wrong guess.
+                    .unwrap_or((1e-6, 0.0));
+                b.push(decode(
+                    raw as f64 * scale.0 + scale.1,
+                    p.original_len,
+                    &p.data,
+                ))?;
+            }
+
             // A simple packet block carries no timestamp by design.
             Block::SimplePacket(p) => {
                 b.push(decode(0.0, p.original_len, &p.data))?;
             }
-            // Section headers, interface descriptions and name resolution carry
-            // no packets — skipping them is correct, not a gap.
+
+            // Name resolution, statistics and the rest carry no packets —
+            // skipping them is correct, not a gap.
             _ => {}
         }
     }
-    b.finish()
+    b.finish(truncated)
 }

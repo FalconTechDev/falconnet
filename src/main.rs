@@ -141,6 +141,15 @@ async fn load(file: &Path) -> Result<(SessionContext, Loaded)> {
         ms: t.elapsed().as_secs_f64() * 1000.0,
     };
 
+    // Said once, on stderr, before any answer is printed. A short capture that
+    // looks complete would make every count below it quietly wrong.
+    if let Some(why) = &cap.truncated {
+        eprintln!(
+            "warning: {why}. {} packets were read; anything after the break is missing.",
+            loaded.packets
+        );
+    }
+
     let ctx = SessionContext::new();
     ctx.register_table(
         "packets",

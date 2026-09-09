@@ -211,6 +211,24 @@ around that failure mode rather than around coverage.
 - **A bad filter must fail loudly.** Silently ignoring one would show unfiltered
   data to someone who believes it is filtered.
 
+Two bugs were found by writing those tests rather than by using the tool, which
+is the point of them:
+
+**pcapng timestamps were wrong by a factor of a thousand.** A pcapng timestamp
+is a bare counter whose unit each interface declares in `if_tsresol`; the
+`pcap-file` crate hands back the raw counter inside a `Duration` built with
+`from_nanos` and never reads the option, so every capture Wireshark writes —
+Wireshark uses microseconds — arrived scaled by 1000. Nothing looked broken:
+the packets were all there, in the right order, with plausible times. falconet
+now reads `if_tsresol` itself, including its power-of-two form, and a test pins
+five resolutions to the same instant.
+
+**A capture cut off mid-packet was rejected whole.** Captures get truncated
+constantly — Ctrl+C, a full disk, a file copied while still being written — and
+throwing away every packet that did arrive is the wrong answer. So is reading
+it silently, which would make every count quietly short. It now reads what is
+there and says on stderr what was lost.
+
 ```bash
 cargo test
 ```
@@ -225,6 +243,7 @@ them.
 | The capture is held in memory | A file larger than RAM cannot be loaded yet; streaming and spill-to-disk are the next structural step |
 | Flows have no idle timeout | Two exchanges that reuse a source port merge into one conversation, overstating its duration. `triage` works around this where it matters by measuring only two-packet DNS exchanges, where the duration *is* the response time |
 | No live capture yet | `who` reads the connection table; capturing packets off an interface needs Npcap and is not implemented |
+| Timestamps are `f64` seconds | At present-day epoch values that leaves about a quarter-microsecond of resolution, so nanosecond captures lose their last digits |
 | Only DNS, TLS and HTTP are dissected | Anything else is visible as addresses, ports and sizes only |
 | No TCP stream reassembly | A header split across segments is not seen; `payload_len` is per packet |
 | IPv6 is parsed but untested against real traffic | Addresses and ports are read; extension-header chains have had no exercise |

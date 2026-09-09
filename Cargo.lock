@@ -1375,7 +1375,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "falconet"
+name = "falconnet"
 version = "0.1.0"
 dependencies = [
  "anyhow",

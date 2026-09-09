@@ -42,7 +42,7 @@ pub fn schema() -> SchemaRef {
     ]))
 }
 
-/// What each column means, for `falconet schema`.
+/// What each column means, for `falconnet schema`.
 pub const DOCS: &[(&str, &str)] = &[
     ("ts", "capture timestamp, epoch seconds"),
     ("src_ip", "source address; null for non-IP frames"),

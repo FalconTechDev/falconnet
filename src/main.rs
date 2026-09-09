@@ -1,4 +1,4 @@
-//! falconet — ask a packet capture a question, in SQL.
+//! falconnet — ask a packet capture a question, in SQL.
 //!
 //! Two tables come out of one pass over the file: `packets`, one row per frame,
 //! and `flows`, one row per conversation. Wireshark shows you the first and
@@ -25,7 +25,7 @@ use datafusion::prelude::SessionContext;
 
 #[derive(Parser)]
 #[command(
-    name = "falconet",
+    name = "falconnet",
     about = "Ask a packet capture a question, in SQL",
     version
 )]

@@ -60,7 +60,7 @@ pub async fn run(
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    println!("falconet is serving the capture at http://{addr}");
+    println!("falconnet is serving the capture at http://{addr}");
     println!("Press Ctrl+C to stop.");
     axum::serve(listener, router).await?;
     Ok(())
@@ -192,7 +192,7 @@ mod tests {
     async fn the_page_is_served() {
         let (status, body) = call(get_req("/")).await;
         assert_eq!(status, StatusCode::OK);
-        assert!(body.contains("<title>falconet</title>"), "not the UI page");
+        assert!(body.contains("<title>falconnet</title>"), "not the UI page");
     }
 
     #[tokio::test]

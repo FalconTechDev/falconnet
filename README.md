@@ -1,6 +1,6 @@
 <div align="center">
 
-# falconet
+# falconnet
 
 **Ask a packet capture a question, in SQL — and get an answer, not twenty thousand rows.**
 
@@ -17,16 +17,16 @@ packets, and close it again. And there is one question it cannot answer at all �
 *which program sent this?* — because by the time bytes reach the wire, the
 process that produced them is gone from the picture.
 
-falconet does not try to replace Wireshark's three thousand protocol dissectors.
+falconnet does not try to replace Wireshark's three thousand protocol dissectors.
 It does the three things Wireshark is bad at:
 
 ```bash
-falconet query dump.pcap "SELECT host, SUM(bytes) FROM flows GROUP BY host"
-falconet triage dump.pcap     # what is broken, in words
-falconet who                  # who on this machine is connected to what, by process
+falconnet query dump.pcap "SELECT host, SUM(bytes) FROM flows GROUP BY host"
+falconnet triage dump.pcap     # what is broken, in words
+falconnet who                  # who on this machine is connected to what, by process
 
-falconet tui dump.pcap        # browse it in the terminal
-falconet serve dump.pcap      # or in a browser
+falconnet tui dump.pcap        # browse it in the terminal
+falconnet serve dump.pcap      # or in a browser
 ```
 
 ---
@@ -39,7 +39,7 @@ In Wireshark, "top ten talkers with byte counts" is a menu, a dialog and a
 scroll. Here it is a line you can also put in a script:
 
 ```bash
-falconet query capture.pcap "
+falconnet query capture.pcap "
   SELECT COALESCE(host, server_ip) AS peer,
          COUNT(*) AS conns, SUM(bytes) AS bytes
   FROM flows
@@ -95,12 +95,12 @@ and `state` says how it ended: `established`, `closed`, `reset`, `refused`,
 closed; silence means a firewall dropped it or the host is down. Different
 findings, different fixes.
 
-Run `falconet schema` for both tables with every column documented.
+Run `falconnet schema` for both tables with every column documented.
 
 ## Names, not addresses
 
 A capture holds IP addresses, and every interesting question is about names.
-falconet reads the three protocols that carry a hostname in the clear:
+falconnet reads the three protocols that carry a hostname in the clear:
 
 | | what it yields |
 |---|---|
@@ -113,7 +113,7 @@ So a capture reports `api.github.com` where Wireshark reports `140.82.114.25`.
 ## Triage
 
 ```
-$ falconet triage capture.pcap
+$ falconnet triage capture.pcap
 200022 packets in 22308 conversations, 12.5 s of traffic
 
   x 5617 connections refused by 10.0.4.7:5432 — the port is closed, nothing is listening
@@ -130,7 +130,7 @@ silence is never ambiguous.
 ## Who is talking
 
 ```
-$ falconet who
+$ falconnet who
 PROCESS                      PID     SOCKETS  TALKING TO
 firefox.exe                  5496    4        140.82.114.25:443, 127.0.0.1:55369 +1 more
 Telegram.exe                 8432    3        149.154.167.41:443, 149.154.175.50:443
@@ -138,7 +138,7 @@ zerotier-one_x64.exe         23528   16       127.0.0.1:2160, 127.0.0.1:2161
 ```
 
 This is the part no packet capture can reconstruct. The socket-to-process
-mapping lives in the kernel's connection table, so falconet asks the running
+mapping lives in the kernel's connection table, so falconnet asks the running
 system for it. `--sockets` shows every socket instead of one line per program.
 
 Because the table is a snapshot of this instant, a connection that has already
@@ -148,18 +148,44 @@ a gap in the implementation.
 ## Browsing
 
 ```bash
-falconet tui capture.pcap
+falconnet tui capture.pcap
+```
+
+```
+ falconnet  conversations   1 / 22308
+┌──────────────────────────────────────────────────────────────────────────────────────────┐
+│ client                server                host                  app   pkts      bytes      secs state       │
+│▌192.168.1.12:51000    140.82.114.25:443     api.github.com        TLS    1843   13.5 MB     2.117 closed      │
+│ 192.168.1.12:51204    10.0.4.7:5432                                          2     108 B     0.000 refused     │
+│ 192.168.1.12:51301    93.184.216.34:80      example.com           HTTP     18     9.0 KB     0.204 closed      │
+│ 192.168.1.31:52880    10.0.9.2:8080                                          1      60 B     0.000 no-reply    │
+│ 192.168.1.12:51410    162.159.130.234:443   gateway.discord.gg    TLS     402   800.9 KB    31.900 established │
+└──────────────────────────────────────────────────────────────────────────────────────────┘
+┌filter — press / to edit──────────────────────────────────────────────────────────────────┐
+│state = 'refused'   ·   bytes > 100000   ·   host LIKE '%github%'                          │
+└──────────────────────────────────────────────────────────────────────────────────────────┘
+ Tab switch view   / filter   j k ↑ ↓ move   g G top bottom   q quit
 ```
 
 Two views — conversations and packets — switched with `Tab`. `/` opens a filter
-that takes a SQL condition (`state = 'refused'`, `info LIKE '%NXDOMAIN%'`), so
-whatever you work out while looking around pastes straight into
-`falconet query`. `q` quits.
+that takes a SQL condition, so whatever you work out while looking around pastes
+straight into `falconnet query`. `q` quits.
+
+The screen does what reading it would otherwise cost you: columns are sized to
+what they hold rather than split evenly, byte counts are scaled so they can be
+compared at a glance, timestamps are wall-clock, and `state` is coloured —
+`refused` red, `no-reply` yellow, `established` green — because that one field
+is what the eye is looking for. `HTTP` is coloured too, since cleartext is worth
+noticing.
+
+That frame is not a mock-up: the layout is rendered to a text buffer in a test,
+so it is checked on every run — headings present, no column truncated away, no
+line spilling past the terminal width.
 
 ## In a browser
 
 ```bash
-falconet serve capture.pcap        # http://127.0.0.1:8080
+falconnet serve capture.pcap        # http://127.0.0.1:8080
 ```
 
 The same two tables and the same rules, as a page: the diagnosis at the top, a
@@ -171,8 +197,8 @@ Wireshark is not an option can still read the capture.
 ## Install
 
 ```bash
-git clone https://github.com/<you>/falconet
-cd falconet
+git clone https://github.com/<you>/falconnet
+cd falconnet
 cargo build --release
 ```
 
@@ -219,7 +245,7 @@ is a bare counter whose unit each interface declares in `if_tsresol`; the
 `pcap-file` crate hands back the raw counter inside a `Duration` built with
 `from_nanos` and never reads the option, so every capture Wireshark writes —
 Wireshark uses microseconds — arrived scaled by 1000. Nothing looked broken:
-the packets were all there, in the right order, with plausible times. falconet
+the packets were all there, in the right order, with plausible times. falconnet
 now reads `if_tsresol` itself, including its power-of-two form, and a test pins
 five resolutions to the same instant.
 

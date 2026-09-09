@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>falconet</title>
+<title>falconnet</title>
 <style>
   :root {
     --bg: #f6f8fa; --panel: #fff; --line: #d0d7de; --fg: #1f2328; --dim: #636c76;
@@ -84,7 +84,7 @@
 </head>
 <body>
 <header>
-  <h1>falconet</h1>
+  <h1>falconnet</h1>
   <span class="meta" id="meta">loading…</span>
 </header>
 
@@ -141,7 +141,7 @@ async function boot() {
   const s = await (await fetch('/api/summary')).json();
   $('meta').textContent =
     `${s.file} — ${s.packets.toLocaleString()} packets in ${s.flows.toLocaleString()} conversations`;
-  document.title = `falconet — ${s.file}`;
+  document.title = `falconnet — ${s.file}`;
 
   const t = await (await fetch('/api/triage')).json();
   const marks = { problem: 'x', warning: '!', ok: '+' };

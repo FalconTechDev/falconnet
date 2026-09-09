@@ -100,7 +100,7 @@ def client_hello(sni: str) -> bytes:
 
 def http_get(host: str, path: str) -> bytes:
     return (f"GET {path} HTTP/1.1\r\nHost: {host}\r\n"
-            f"User-Agent: falconet-fixture/1.0\r\nAccept: */*\r\n\r\n").encode()
+            f"User-Agent: falconnet-fixture/1.0\r\nAccept: */*\r\n\r\n").encode()
 
 
 # ─── writer ─────────────────────────────────────────────────────────────────

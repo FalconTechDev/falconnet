@@ -1,12 +1,12 @@
 [package]
-name = "falconet"
+name = "falconnet"
 version = "0.1.0"
 edition = "2021"
 description = "SQL, diagnostics and per-process attribution over packet captures"
 license = "MIT"
 
 [[bin]]
-name = "falconet"
+name = "falconnet"
 path = "src/main.rs"
 
 [dependencies]

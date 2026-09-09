@@ -68,12 +68,17 @@ fn write_pcap(path: &std::path::Path, frames: &[Vec<u8>]) {
     std::fs::write(path, out).unwrap();
 }
 
-fn falconet() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_falconet"))
+fn falconnet() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_falconnet"))
 }
 
 fn query(path: &std::path::Path, sql: &str) -> String {
-    let out = falconet().arg("query").arg(path).arg(sql).output().unwrap();
+    let out = falconnet()
+        .arg("query")
+        .arg(path)
+        .arg(sql)
+        .output()
+        .unwrap();
     assert!(
         out.status.success(),
         "query failed: {}",
@@ -84,7 +89,7 @@ fn query(path: &std::path::Path, sql: &str) -> String {
 
 #[test]
 fn fields_land_in_the_right_columns() {
-    let dir = std::env::temp_dir().join("falconet_decode_test");
+    let dir = std::env::temp_dir().join("falconnet_decode_test");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("fields.pcap");
 
@@ -129,7 +134,7 @@ fn fields_land_in_the_right_columns() {
 
 #[test]
 fn every_packet_is_counted() {
-    let dir = std::env::temp_dir().join("falconet_decode_test");
+    let dir = std::env::temp_dir().join("falconnet_decode_test");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("count.pcap");
 
@@ -155,12 +160,12 @@ fn every_packet_is_counted() {
 
 #[test]
 fn a_truncated_file_is_an_error_not_an_empty_table() {
-    let dir = std::env::temp_dir().join("falconet_decode_test");
+    let dir = std::env::temp_dir().join("falconnet_decode_test");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("garbage.pcap");
     std::fs::write(&path, b"this is not a capture at all").unwrap();
 
-    let out = falconet().arg("stat").arg(&path).output().unwrap();
+    let out = falconnet().arg("stat").arg(&path).output().unwrap();
     assert!(!out.status.success(), "garbage input should fail loudly");
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -175,7 +180,7 @@ fn a_truncated_file_is_an_error_not_an_empty_table() {
 /// Getting this backwards silently swaps every c2s/s2c figure in a report.
 #[test]
 fn the_client_is_whoever_sent_the_syn() {
-    let dir = std::env::temp_dir().join("falconet_decode_test");
+    let dir = std::env::temp_dir().join("falconnet_decode_test");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("direction.pcap");
 
@@ -206,7 +211,7 @@ fn the_client_is_whoever_sent_the_syn() {
 
 #[test]
 fn a_syn_answered_by_rst_is_refused() {
-    let dir = std::env::temp_dir().join("falconet_decode_test");
+    let dir = std::env::temp_dir().join("falconnet_decode_test");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("refused.pcap");
 
@@ -230,7 +235,7 @@ fn a_syn_answered_by_rst_is_refused() {
 /// connection count in the tool doubles.
 #[test]
 fn both_directions_are_one_flow() {
-    let dir = std::env::temp_dir().join("falconet_decode_test");
+    let dir = std::env::temp_dir().join("falconnet_decode_test");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("onedir.pcap");
 
@@ -260,7 +265,7 @@ fn both_directions_are_one_flow() {
 /// noise, and one that never fires is decoration.
 #[test]
 fn triage_reports_a_refusal_and_stays_quiet_otherwise() {
-    let dir = std::env::temp_dir().join("falconet_decode_test");
+    let dir = std::env::temp_dir().join("falconnet_decode_test");
     std::fs::create_dir_all(&dir).unwrap();
 
     let refused = dir.join("triage_refused.pcap");
@@ -271,7 +276,7 @@ fn triage_reports_a_refusal_and_stays_quiet_otherwise() {
             tcp_frame([10, 0, 4, 7], [10, 0, 0, 1], 5432, 51000, 0x14, &[]),
         ],
     );
-    let out = falconet().arg("triage").arg(&refused).output().unwrap();
+    let out = falconnet().arg("triage").arg(&refused).output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         text.contains("refused by 10.0.4.7:5432"),
@@ -287,7 +292,7 @@ fn triage_reports_a_refusal_and_stays_quiet_otherwise() {
             tcp_frame([10, 0, 0, 1], [10, 0, 0, 2], 51000, 443, 0x11, &[]),
         ],
     );
-    let out = falconet().arg("triage").arg(&clean).output().unwrap();
+    let out = falconnet().arg("triage").arg(&clean).output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         !text.contains(" x "),
@@ -378,7 +383,7 @@ fn write_pcapng_res(
 
 #[test]
 fn a_pcapng_file_reads_the_same_as_a_pcap() {
-    let dir = std::env::temp_dir().join("falconet_decode_test");
+    let dir = std::env::temp_dir().join("falconnet_decode_test");
     std::fs::create_dir_all(&dir).unwrap();
 
     let frames = vec![
@@ -419,7 +424,7 @@ fn a_pcapng_file_reads_the_same_as_a_pcap() {
 /// they are the most likely thing to be silently wrong.
 #[test]
 fn pcapng_timestamps_are_read_in_the_right_unit() {
-    let dir = std::env::temp_dir().join("falconet_decode_test");
+    let dir = std::env::temp_dir().join("falconnet_decode_test");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("ts.pcapng");
 
@@ -445,11 +450,11 @@ fn pcapng_timestamps_are_read_in_the_right_unit() {
 
 /// pcapng stores a bare counter and lets each interface declare its unit.
 /// The library underneath reads the counter but not the unit, so this is the
-/// conversion falconet has to do itself — and getting it wrong scales every
+/// conversion falconnet has to do itself — and getting it wrong scales every
 /// timestamp in the file by a constant, which looks entirely plausible.
 #[test]
 fn every_timestamp_resolution_lands_on_the_same_instant() {
-    let dir = std::env::temp_dir().join("falconet_decode_test");
+    let dir = std::env::temp_dir().join("falconnet_decode_test");
     std::fs::create_dir_all(&dir).unwrap();
 
     let frames: Vec<_> = (0..3)
@@ -493,7 +498,7 @@ fn every_timestamp_resolution_lands_on_the_same_instant() {
 /// file, which is a different message and a different exit code.
 #[test]
 fn an_empty_capture_is_empty_not_broken() {
-    let dir = std::env::temp_dir().join("falconet_decode_test");
+    let dir = std::env::temp_dir().join("falconnet_decode_test");
     std::fs::create_dir_all(&dir).unwrap();
 
     for (name, write) in [
@@ -506,7 +511,7 @@ fn an_empty_capture_is_empty_not_broken() {
         let path = dir.join(name);
         write(&path, &[]);
 
-        let out = falconet().arg("stat").arg(&path).output().unwrap();
+        let out = falconnet().arg("stat").arg(&path).output().unwrap();
         assert!(out.status.success(), "{name} should be read, not rejected");
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(text.contains("no packets"), "{name}:\n{text}");
@@ -552,7 +557,7 @@ fn tcp6_frame(src: [u8; 16], dst: [u8; 16], sport: u16, dport: u16, flags: u8) -
 /// blank without anything failing.
 #[test]
 fn ipv6_packets_are_decoded_and_grouped() {
-    let dir = std::env::temp_dir().join("falconet_decode_test");
+    let dir = std::env::temp_dir().join("falconnet_decode_test");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("v6.pcap");
 
@@ -597,7 +602,7 @@ fn ipv6_packets_are_decoded_and_grouped() {
 /// and say what was lost.
 #[test]
 fn a_capture_cut_mid_packet_keeps_what_it_has_and_says_so() {
-    let dir = std::env::temp_dir().join("falconet_decode_test");
+    let dir = std::env::temp_dir().join("falconnet_decode_test");
     std::fs::create_dir_all(&dir).unwrap();
 
     let frames: Vec<_> = (0..3)
@@ -611,7 +616,7 @@ fn a_capture_cut_mid_packet_keeps_what_it_has_and_says_so() {
     let cut = dir.join("cut.pcap");
     std::fs::write(&cut, &bytes[..bytes.len() - 100]).unwrap();
 
-    let out = falconet()
+    let out = falconnet()
         .arg("query")
         .arg(&cut)
         .arg("SELECT COUNT(*) AS n FROM packets")
@@ -671,7 +676,7 @@ fn ip_of(frame: &[u8]) -> Vec<u8> {
 /// "there was nothing interesting here".
 #[test]
 fn every_supported_link_layer_yields_the_same_packet() {
-    let dir = std::env::temp_dir().join("falconet_decode_test");
+    let dir = std::env::temp_dir().join("falconnet_decode_test");
     std::fs::create_dir_all(&dir).unwrap();
 
     let eth = tcp_frame([192, 168, 1, 10], [93, 184, 216, 34], 51000, 443, 0x02, &[]);
@@ -712,14 +717,14 @@ fn every_supported_link_layer_yields_the_same_packet() {
 /// indistinguishable from a capture that genuinely held no IP traffic.
 #[test]
 fn an_unsupported_link_layer_is_announced() {
-    let dir = std::env::temp_dir().join("falconet_decode_test");
+    let dir = std::env::temp_dir().join("falconnet_decode_test");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("link_usb.pcap");
 
     let eth = tcp_frame([10, 0, 0, 1], [10, 0, 0, 2], 51000, 443, 0x02, &[]);
     write_pcap_link(&path, 189, &[ip_of(&eth)]); // 189 = USB on Linux
 
-    let out = falconet()
+    let out = falconnet()
         .arg("query")
         .arg(&path)
         .arg("SELECT COUNT(*) AS n FROM packets")

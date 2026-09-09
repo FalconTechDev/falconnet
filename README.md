@@ -132,9 +132,9 @@ silence is never ambiguous.
 ```
 $ falconnet who
 PROCESS                      PID     SOCKETS  TALKING TO
-firefox.exe                  5496    4        140.82.114.25:443, 127.0.0.1:55369 +1 more
-Telegram.exe                 8432    3        149.154.167.41:443, 149.154.175.50:443
-zerotier-one_x64.exe         23528   16       127.0.0.1:2160, 127.0.0.1:2161
+firefox.exe                  5496    7        140.82.114.25:443, 151.101.1.140:443 +3 more
+node.exe                     8432    3        127.0.0.1:5432, 127.0.0.1:6379
+svchost.exe                  1204    12       (listening only)
 ```
 
 This is the part no packet capture can reconstruct. The socket-to-process
@@ -235,8 +235,31 @@ Wireshark is not an option can still read the capture.
 
 ## Install
 
-```bash
-git clone https://github.com/<you>/falconnet
+**Linux and macOS**
+
+```sh
+curl -fsSL https://github.com/FalconTechDev/falconnet/releases/latest/download/install.sh | sh
+```
+
+**Windows** (PowerShell)
+
+```powershell
+irm https://github.com/FalconTechDev/falconnet/releases/latest/download/install.ps1 | iex
+```
+
+Both drop one binary under your home directory and put it on your `PATH`. No
+administrator rights, no service, nothing written outside your own profile —
+and the checksum published with each archive is verified before anything is
+installed. `FALCONNET_DIR` picks a different location.
+
+Or take an archive from the [releases](https://github.com/FalconTechDev/falconnet/releases)
+and unpack it wherever you like: it is a single executable with no runtime and
+no libraries to install alongside it.
+
+**From source**
+
+```sh
+git clone https://github.com/FalconTechDev/falconnet
 cd falconnet
 cargo build --release
 ```

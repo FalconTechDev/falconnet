@@ -1,0 +1,136 @@
+name: Release
+
+# Tag a version and every platform builds itself. Cross-compiling all of these
+# from one machine means five toolchains and five ways to be subtly wrong;
+# building each on its own runner means the binary was made by the system it
+# will run on.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+            cross: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            archive: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # The ARM64 Linux build is the only one that is not native to its runner.
+      - name: Install the cross linker
+        if: matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # Only the native builds can run their own tests; a cross-built binary
+      # cannot execute on the runner that produced it.
+      - name: Test
+        if: ${{ !matrix.cross }}
+        run: cargo test --release --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          name="falconnet-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            cp "target/${{ matrix.target }}/release/falconnet.exe" "dist/$name/"
+          else
+            cp "target/${{ matrix.target }}/release/falconnet" "dist/$name/"
+          fi
+          cp README.md LICENSE "dist/$name/"
+          cd dist
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a "$name.zip" "$name" > /dev/null
+          else
+            tar czf "$name.tar.gz" "$name"
+          fi
+          # A checksum per archive, so an install script can verify what it
+          # downloaded rather than trusting the transfer.
+          sha256sum "$name.${{ matrix.archive }}" > "$name.${{ matrix.archive }}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+            install.sh
+            install.ps1
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            **Linux and macOS**
+
+            ```sh
+            curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/install.sh | sh
+            ```
+
+            **Windows** (PowerShell)
+
+            ```powershell
+            irm https://github.com/${{ github.repository }}/releases/latest/download/install.ps1 | iex
+            ```
+
+            Both put `falconnet` on your `PATH`. Or take an archive below and
+            unpack it wherever you like — it is one binary with no runtime and
+            no system libraries to install.

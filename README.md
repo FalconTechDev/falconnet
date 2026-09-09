@@ -49,6 +49,28 @@ arrays instead of walking every packet in the file, which is why aggregating a
 whole capture takes milliseconds. Wireshark stores packets one after another and
 structurally cannot do this.
 
+## Speed
+
+Measured on an **Intel i7-13700H, Windows 11**, release build, against a
+synthetic capture from `scripts/gen_capture.py`.
+
+| | 1 000 006 packets · 530 MB |
+|---|---|
+| Parse, dissect and build both tables | **≈ 1.0 s** |
+| `SELECT COUNT(*) … WHERE tcp_flags LIKE '%RST%'` | **5 ms** |
+| Top hosts by bytes, `GROUP BY` over `flows` | **16 ms** |
+| Top talkers by bytes, `GROUP BY` over 1 M packets | **16 ms** |
+| Full `triage` — all ten rules, end to end | **1.15 s** |
+
+The first row is the one that costs: a second to read and decode the file, and
+everything after it in milliseconds. That ratio is the whole argument for the
+columnar layout — once a capture is in columns, asking it another question is
+nearly free, which is what makes exploring one practical rather than a chore.
+
+These are not a comparison against Wireshark. Measuring a command-line
+aggregation against a GUI's click path would flatter this tool and mean
+nothing; the honest claim is the one above, in absolute terms.
+
 ## Two tables
 
 One pass over the file produces both.
